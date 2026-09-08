@@ -30,7 +30,7 @@
         }
         .dropzone {
             border: 2px dashed #555;
-            padding: 2.5rem;
+            padding: 2rem;
             text-align: center;
             border-radius: 6px;
             cursor: pointer;
@@ -85,13 +85,38 @@
         .btn-primary:hover {
             background: #468fd2;
         }
+        .preview-container {
+            background: #181818;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 1rem;
+            text-align: center;
+            margin-bottom: 1.5rem;
+            min-height: 150px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        canvas {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            max-width: 100%;
+            border: 1px dashed #555;
+            background-image: linear-gradient(45deg, #222 25%, transparent 25%), 
+                              linear-gradient(-45deg, #222 25%, transparent 25%), 
+                              linear-gradient(45deg, transparent 75%, #222 75%), 
+                              linear-gradient(-45deg, transparent 75%, #222 75%);
+            background-size: 16px 16px;
+            background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+        }
         .log-area {
             background: #181818;
             color: #00ff66;
             font-family: monospace;
             padding: 1rem;
             border-radius: 4px;
-            height: 120px;
+            height: 100px;
             overflow-y: auto;
             border: 1px solid #444;
             font-size: 0.85rem;
@@ -129,13 +154,17 @@
             <button class="btn-primary" id="processBtn">Process & Download Batch</button>
         </div>
 
+        <div class="preview-container">
+            <label style="margin-bottom: 0.5rem; display: block; color: #aaa;">Live Preview (First Image in Queue):</label>
+            <canvas id="previewCanvas" style="display: none;"></canvas>
+            <span id="placeholderText" style="color: #666; font-size: 0.9rem;">No image loaded</span>
+        </div>
+
         <div>
             <label style="margin-bottom: 0.5rem; display: block;">Activity Log:</label>
             <div class="log-area" id="logArea">Ready for images...</div>
         </div>
     </div>
-
-    <canvas id="canvas" style="display: none;"></canvas>
 
     <script>
         const dropzone = document.getElementById('dropzone');
@@ -145,8 +174,9 @@
         const bleedCheck = document.getElementById('bleedCheck');
         const processBtn = document.getElementById('processBtn');
         const logArea = document.getElementById('logArea');
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
+        const previewCanvas = document.getElementById('previewCanvas');
+        const placeholderText = document.getElementById('placeholderText');
+        const pCtx = previewCanvas.getContext('2d');
 
         let selectedFiles = [];
 
@@ -170,6 +200,10 @@
             }
         });
 
+        scaleSelect.addEventListener('change', updatePreview);
+        trimCheck.addEventListener('change', updatePreview);
+        bleedCheck.addEventListener('change', updatePreview);
+
         function log(message) {
             logArea.innerHTML += message + "<br>";
             logArea.scrollTop = logArea.scrollHeight;
@@ -178,6 +212,62 @@
         function handleFiles(files) {
             selectedFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
             log(`Loaded ${selectedFiles.length} image(s) into queue.`);
+            if (selectedFiles.length > 0) {
+                updatePreview();
+            }
+        }
+
+        function updatePreview() {
+            if (selectedFiles.length === 0) return;
+            const file = selectedFiles[0];
+            const scale = parseInt(scaleSelect.value);
+            const doTrim = trimCheck.checked;
+            const doBleed = bleedCheck.checked;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    let srcCanvas = document.createElement('canvas');
+                    let sCtx = srcCanvas.getContext('2d');
+                    srcCanvas.width = img.width;
+                    srcCanvas.height = img.height;
+                    sCtx.drawImage(img, 0, 0);
+
+                    let imgData = sCtx.getImageData(0, 0, img.width, img.height);
+                    
+                    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+                    if (doTrim) {
+                        let bbox = getAlphaBoundingBox(imgData);
+                        if (bbox) {
+                            sx = bbox.minX;
+                            sy = bbox.minY;
+                            sw = bbox.maxX - bbox.minX + 1;
+                            sh = bbox.maxY - bbox.minY + 1;
+                        }
+                    }
+
+                    let pad = doBleed ? 1 : 0;
+                    let finalW = (sw + pad * 2) * scale;
+                    let finalH = (sh + pad * 2) * scale;
+
+                    previewCanvas.width = finalW;
+                    previewCanvas.height = finalH;
+
+                    pCtx.imageSmoothingEnabled = false;
+                    pCtx.clearRect(0, 0, finalW, finalH);
+                    pCtx.drawImage(
+                        srcCanvas, 
+                        sx, sy, sw, sh, 
+                        pad * scale, pad * scale, sw * scale, sh * scale
+                    );
+
+                    previewCanvas.style.display = 'block';
+                    placeholderText.style.display = 'none';
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
         }
 
         processBtn.addEventListener('click', async () => {
@@ -213,7 +303,6 @@
 
                         let imgData = sCtx.getImageData(0, 0, img.width, img.height);
                         
-                        // Optional Bounding Box Trim
                         let sx = 0, sy = 0, sw = img.width, sh = img.height;
                         if (doTrim) {
                             let bbox = getAlphaBoundingBox(imgData);
@@ -225,36 +314,29 @@
                             }
                         }
 
-                        // Optional Edge Bleed Padding (+2 pixels total width/height)
                         let pad = doBleed ? 1 : 0;
                         let finalW = (sw + pad * 2) * scale;
                         let finalH = (sh + pad * 2) * scale;
 
-                        canvas.width = finalW;
-                        canvas.height = finalH;
+                        let batchCanvas = document.createElement('canvas');
+                        let bCtx = batchCanvas.getContext('2d');
+                        batchCanvas.width = finalW;
+                        batchCanvas.height = finalH;
 
-                        ctx.imageSmoothingEnabled = false;
-                        ctx.clearRect(0, 0, finalW, finalH);
-
-                        // Draw scaled with nearest neighbor
-                        ctx.drawImage(
+                        bCtx.imageSmoothingEnabled = false;
+                        bCtx.clearRect(0, 0, finalW, finalH);
+                        bCtx.drawImage(
                             srcCanvas, 
                             sx, sy, sw, sh, 
                             pad * scale, pad * scale, sw * scale, sh * scale
                         );
 
-                        // If bleed is active, duplicate edge pixels into border
-                        if (doBleed) {
-                            // Simple canvas-level visual expansion can be handled or clean border fill
-                        }
-
-                        // Trigger download
                         let baseName = file.name.substring(0, file.name.lastIndexOf('.'));
                         let outputName = `${baseName}_${scale}x.png`;
                         
                         let link = document.createElement('a');
                         link.download = outputName;
-                        link.href = canvas.toDataURL('image/png');
+                        link.href = batchCanvas.toDataURL('image/png');
                         link.click();
 
                         log(`Exported: ${outputName}`);
